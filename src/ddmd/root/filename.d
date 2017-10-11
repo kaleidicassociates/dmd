@@ -27,7 +27,9 @@ import ddmd.root.rootobject;
 nothrow
 {
 version (Windows) extern (C) int mkdir(const char*);
-version (Windows) alias _mkdir = mkdir;
+version (Windows) extern(Windows) uint CreateDirectoryW(const(wchar)*, void*);
+version (Windows) extern(Windows) uint GetFullPathNameW(const(wchar)*, uint, const(wchar)*, const(wchar)*);
+version (Windows) extern(Windows) uint GetLastError();
 version (Posix) extern (C) char* canonicalize_file_name(const char*);
 version (Windows) extern (C) int stricmp(const char*, const char*) pure;
 version (Windows) extern (Windows) DWORD GetFullPathNameA(LPCSTR lpFileName, DWORD nBufferLength, LPSTR lpBuffer, LPSTR* lpFilePart);
@@ -631,6 +633,7 @@ nothrow:
                     }
                     bool r = ensurePathExists(p);
                     mem.xfree(cast(void*)p);
+
                     if (r)
                         return r;
                 }
@@ -644,7 +647,6 @@ nothrow:
                 }
                 if (path[strlen(path) - 1] != sep)
                 {
-                    //printf("mkdir(%s)\n", path);
                     version (Windows)
                     {
                         int r = _mkdir(path);
@@ -664,6 +666,7 @@ nothrow:
                 }
             }
         }
+
         return false;
     }
 
@@ -719,5 +722,89 @@ nothrow:
     extern (C++) const(char)* toChars() const pure
     {
         return str;
+    }
+}
+
+version(Windows)
+{
+    /*
+      The code before used the POSIX function `mkdir` on Windows. That
+      function is now deprecated and fails with long paths, so instead
+      we use the newer `CreateDirectoryW`.
+
+      `CreateDirectoryW` is the unicode version of the generic macro
+      `CreateDirectory`.  `CreateDirectoryA` has a file path
+      limitation of 248 characters, `mkdir` fails with less and might
+      fail due to the number of consecutive `..`s in the
+      path. `CreateDirectoryW` also normally has a 248 character
+      limit, unless the path is absolute and starts with `\\?\`. Note
+      that this is different from starting with the almost identical
+      `\\?`.
+
+      Please consult
+      https://msdn.microsoft.com/en-us/library/windows/desktop/aa363855(v=vs.85).aspx
+    */
+    private int _mkdir(const(char)* path) nothrow
+    {
+        import core.stdc.string: strlen;
+        import core.sys.windows.winerror: ERROR_ALREADY_EXISTS;
+        import core.stdc.errno: errno, EEXIST;
+
+        // Since the unicode Win32 APIs use UTF16, we need to convert
+        // from UTF8 to UTF16 first.
+
+        const length8 = strlen(path);
+
+        // Conservative estimate that should be enough for any UTF8 string
+        // according to https://tools.ietf.org/html/rfc3629.
+        // The +1 is for the null terminator.
+        const length16 = length8 * 4 + 1;
+
+        auto wpath = new wchar[length16];
+
+        // Using i, wchar c in the foreach doesn't work since then i would
+        // be tied to the length of the UTF8 sequence.
+        int wpathLen;
+        try
+            foreach(wchar c; path[0 .. length8]) wpath[wpathLen++] = c;
+        catch(Exception)
+            return 1;
+
+        wpath[wpathLen] = 0; // null-terminate it
+
+        // Now wpath is the UTF16 version of path, but to be able to use
+        // extended paths, we need to prefix with `\\?\` and the absolute
+        // path.
+
+        static immutable prefix = `\\?\`w; // see comment above
+
+        // We don't know how large the absolute file path will be We
+        // need to tell GetFullPathName the size of the buffer we're
+        // passing in so we defensively allocate 4 times the size of
+        // the string we have currently.
+        auto absPath = new wchar[prefix.length + wpathLen * 4];
+        absPath[0 .. prefix.length] = prefix[];
+
+        const absPathRet = GetFullPathNameW(wpath.ptr,
+                                            absPath.length,
+                                            &absPath[prefix.length],
+                                            null /*filePartBuffer*/);
+
+        if(absPathRet > absPath.length) return 1;
+
+        // the CreateDirectoryW function takes a pointer to a structure,
+        // but since we're not interested in using it it's declared void*
+        // and we pass null for the default behaviour.
+        void* securityAttributes;
+        const createRet = CreateDirectoryW(absPath.ptr, securityAttributes);
+        const lastError = GetLastError();
+
+        // Preserve compatibility with mkdir since the calling code expects
+        // errno to be set.
+        if (createRet == 0 && lastError == ERROR_ALREADY_EXISTS)
+            errno(EEXIST);
+
+        // different conventions for CreateDirectory and mkdir
+        return createRet == 0 ? 1 : 0;
     }
 }
