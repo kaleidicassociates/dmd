@@ -28,8 +28,8 @@ nothrow
 {
 version (Windows) extern (C) int mkdir(const char*);
 version (Windows) extern(Windows) uint CreateDirectoryW(const(wchar)*, void*);
-version (Windows) extern(Windows) uint GetFullPathNameW(const(wchar)*, uint, const(wchar)*, const(wchar)*);
-version (Windows) extern(Windows) uint GetLastError();
+version (Windows) extern(Windows) uint GetFullPathNameW(const(wchar)*, uint, const(wchar)*, const(wchar)*) pure;
+version (Windows) extern(Windows) uint GetLastError() @safe pure;
 version (Posix) extern (C) char* canonicalize_file_name(const char*);
 version (Windows) extern (C) int stricmp(const char*, const char*) pure;
 version (Windows) extern (Windows) DWORD GetFullPathNameA(LPCSTR lpFileName, DWORD nBufferLength, LPSTR lpBuffer, LPSTR* lpFilePart);
@@ -746,31 +746,65 @@ version(Windows)
     */
     private int _mkdir(const(char)* path) nothrow
     {
-        import core.stdc.string: strlen;
         import core.sys.windows.winerror: ERROR_ALREADY_EXISTS;
         import core.stdc.errno: errno, EEXIST;
 
-        // Since the unicode Win32 APIs use UTF16, we need to convert
-        // from UTF8 to UTF16 first.
+        const extendedPath = path.toExtendedLengthPath();
 
-        const length8 = strlen(path);
+        // the CreateDirectoryW function takes a pointer to a structure,
+        // but since we're not interested in using it it's declared void*
+        // and we pass null for the default behaviour.
+        void* securityAttributes;
+        const createRet = () @trusted
+        {
+            return CreateDirectoryW(&extendedPath[0], securityAttributes);
+        }();
+        const lastError = GetLastError();
+
+        // Preserve compatibility with mkdir since the calling code expects
+        // errno to be set.
+        if (createRet == 0 && lastError == ERROR_ALREADY_EXISTS)
+            errno(EEXIST);
+
+        // different conventions for CreateDirectory and mkdir
+        return createRet == 0 ? 1 : 0;
+    }
+
+    // Converts an UTF8 null-terminated string to an array of wchar that's null
+    // terminated so it can be passed to Win32 APIs.
+    private wchar[] toWStringz(const(char*) str) pure nothrow {
+        import core.stdc.string: strlen;
+
+        const length8 = strlen(str);
 
         // Conservative estimate that should be enough for any UTF8 string
         // according to https://tools.ietf.org/html/rfc3629.
         // The +1 is for the null terminator.
         const length16 = length8 * 4 + 1;
 
-        auto wpath = new wchar[length16];
+        auto wstr = new wchar[length16];
 
         // Using i, wchar c in the foreach doesn't work since then i would
         // be tied to the length of the UTF8 sequence.
-        int wpathLen;
+        int wstrLen;
         try
-            foreach(wchar c; path[0 .. length8]) wpath[wpathLen++] = c;
+            foreach(wchar c; str[0 .. length8]) wstr[wstrLen++] = c;
         catch(Exception)
-            return 1;
+            return null;
 
-        wpath[wpathLen] = 0; // null-terminate it
+        wstr[wstrLen] = 0; // null-terminate it
+
+        return wstr[0 .. wstrLen];
+    }
+
+    // Converts a path to one suitable to be passed to Win32 API
+    // functions that can deal with paths longer than 248
+    // characters. For more information:
+    // https://msdn.microsoft.com/en-us/library/windows/desktop/aa365247(v=vs.85).aspx
+    package wchar[] toExtendedLengthPath(const(char*) path) pure nothrow {
+        // Since the unicode Win32 APIs use UTF16, we need to convert
+        // from UTF8 to UTF16 first.
+        const wpath = path.toWStringz();
 
         // Now wpath is the UTF16 version of path, but to be able to use
         // extended paths, we need to prefix with `\\?\` and the absolute
@@ -782,29 +816,19 @@ version(Windows)
         // need to tell GetFullPathName the size of the buffer we're
         // passing in so we defensively allocate 4 times the size of
         // the string we have currently.
-        auto absPath = new wchar[prefix.length + wpathLen * 4];
+        auto absPath = new wchar[prefix.length + wpath.length * 4];
         absPath[0 .. prefix.length] = prefix[];
 
-        const absPathRet = GetFullPathNameW(wpath.ptr,
-                                            absPath.length,
-                                            &absPath[prefix.length],
-                                            null /*filePartBuffer*/);
+        const absPathRet = () @trusted
+        {
+            return GetFullPathNameW(&wpath[0],
+                                    absPath.length,
+                                    &absPath[prefix.length],
+                                    null /*filePartBuffer*/);
+        }();
 
-        if(absPathRet > absPath.length) return 1;
+        if (absPathRet > absPath.length) return null;
 
-        // the CreateDirectoryW function takes a pointer to a structure,
-        // but since we're not interested in using it it's declared void*
-        // and we pass null for the default behaviour.
-        void* securityAttributes;
-        const createRet = CreateDirectoryW(absPath.ptr, securityAttributes);
-        const lastError = GetLastError();
-
-        // Preserve compatibility with mkdir since the calling code expects
-        // errno to be set.
-        if (createRet == 0 && lastError == ERROR_ALREADY_EXISTS)
-            errno(EEXIST);
-
-        // different conventions for CreateDirectory and mkdir
-        return createRet == 0 ? 1 : 0;
+        return absPath[0 .. absPathRet];
     }
 }
