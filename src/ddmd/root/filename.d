@@ -27,12 +27,8 @@ import ddmd.root.rootobject;
 nothrow
 {
 version (Windows) extern (C) int mkdir(const char*);
-version (Windows) extern(Windows) uint CreateDirectoryW(const(wchar)*, void*);
-version (Windows) extern(Windows) uint GetFullPathNameW(const(wchar)*, uint, const(wchar)*, const(wchar)*) pure;
-version (Windows) extern(Windows) uint GetLastError() @safe pure;
-version (Posix) extern (C) char* canonicalize_file_name(const char*);
 version (Windows) extern (C) int stricmp(const char*, const char*) pure;
-version (Windows) extern (Windows) DWORD GetFullPathNameA(LPCSTR lpFileName, DWORD nBufferLength, LPSTR lpBuffer, LPSTR* lpFilePart);
+version (Posix) extern (C) char* canonicalize_file_name(const char*);
 }
 
 alias Strings = Array!(const(char)*);
@@ -683,6 +679,8 @@ nothrow:
         }
         else version (Windows)
         {
+            import core.sys.windows.winbase: GetFullPathNameA;
+
             /* Apparently, there is no good way to do this on Windows.
              * GetFullPathName isn't it, but use it anyway.
              */
@@ -746,6 +744,7 @@ version(Windows)
     */
     private int _mkdir(const(char)* path) nothrow
     {
+        import core.sys.windows.winbase: CreateDirectoryW, GetLastError;
         import core.sys.windows.winerror: ERROR_ALREADY_EXISTS;
         import core.stdc.errno: errno, EEXIST;
 
@@ -754,12 +753,13 @@ version(Windows)
         // the CreateDirectoryW function takes a pointer to a structure,
         // but since we're not interested in using it it's declared void*
         // and we pass null for the default behaviour.
-        void* securityAttributes;
+        DWORD lastError;
         const createRet = () @trusted
         {
-            return CreateDirectoryW(&extendedPath[0], securityAttributes);
+            const ret = CreateDirectoryW(&extendedPath[0], null /*securityAttributes*/);
+            lastError = GetLastError();
+            return ret;
         }();
-        const lastError = GetLastError();
 
         // Preserve compatibility with mkdir since the calling code expects
         // errno to be set.
@@ -770,9 +770,54 @@ version(Windows)
         return createRet == 0 ? 1 : 0;
     }
 
+    // Converts a path to one suitable to be passed to Win32 API
+    // functions that can deal with paths longer than 248
+    // characters. For more information:
+    // https://msdn.microsoft.com/en-us/library/windows/desktop/aa365247(v=vs.85).aspx
+    // buf is used as a scratch space instead of allocating. If its length is insufficient,
+    // memory is allocated on the GC heap.
+    package wchar[] toExtendedLengthPath(const(char*) path, wchar[] buf = []) nothrow
+    {
+        import core.sys.windows.winbase: GetFullPathNameW;
+
+        // Since the unicode Win32 APIs use UTF16, we need to convert
+        // from UTF8 to UTF16 first.
+        const wpath = path.toWStringz(buf);
+
+        // Now wpath is the UTF16 version of path, but to be able to use
+        // extended paths, we need to prefix with `\\?\` and the absolute
+        // path.
+
+        static immutable prefix = `\\?\`w; // see comment above
+
+        wchar[1024] absBuf;
+
+        // We don't know how large the absolute file path will be We
+        // need to tell GetFullPathName the size of the buffer we're
+        // passing in so we defensively allocate 4 times the size of
+        // the string we have currently.
+        const absLength = prefix.length + wpath.length * 4;
+        auto absPath = absLength > absBuf.length ? new wchar[absLength] : absBuf[];
+
+        absPath[0 .. prefix.length] = prefix[];
+
+        const absPathRet = () @trusted
+        {
+            return GetFullPathNameW(&wpath[0],
+                                    absPath.length,
+                                    &absPath[prefix.length],
+                                    null /*filePartBuffer*/);
+        }();
+
+        return absPathRet > absPath.length ? null : absPath[0 .. absPathRet];
+    }
+
     // Converts an UTF8 null-terminated string to an array of wchar that's null
     // terminated so it can be passed to Win32 APIs.
-    private wchar[] toWStringz(const(char*) str) pure nothrow {
+    // buf is passed as a scratch space to store the result. If more memory
+    // is needed then toWstringz allocates on the GC heap instead.
+    private wchar[] toWStringz(const(char*) str, wchar[] buf = []) pure nothrow
+    {
         import core.stdc.string: strlen;
 
         const length8 = strlen(str);
@@ -782,7 +827,7 @@ version(Windows)
         // The +1 is for the null terminator.
         const length16 = length8 * 4 + 1;
 
-        auto wstr = new wchar[length16];
+        auto wstr = length16 > buf.length ? new wchar[length16] : buf;
 
         // Using i, wchar c in the foreach doesn't work since then i would
         // be tied to the length of the UTF8 sequence.
@@ -797,38 +842,4 @@ version(Windows)
         return wstr[0 .. wstrLen];
     }
 
-    // Converts a path to one suitable to be passed to Win32 API
-    // functions that can deal with paths longer than 248
-    // characters. For more information:
-    // https://msdn.microsoft.com/en-us/library/windows/desktop/aa365247(v=vs.85).aspx
-    package wchar[] toExtendedLengthPath(const(char*) path) pure nothrow {
-        // Since the unicode Win32 APIs use UTF16, we need to convert
-        // from UTF8 to UTF16 first.
-        const wpath = path.toWStringz();
-
-        // Now wpath is the UTF16 version of path, but to be able to use
-        // extended paths, we need to prefix with `\\?\` and the absolute
-        // path.
-
-        static immutable prefix = `\\?\`w; // see comment above
-
-        // We don't know how large the absolute file path will be We
-        // need to tell GetFullPathName the size of the buffer we're
-        // passing in so we defensively allocate 4 times the size of
-        // the string we have currently.
-        auto absPath = new wchar[prefix.length + wpath.length * 4];
-        absPath[0 .. prefix.length] = prefix[];
-
-        const absPathRet = () @trusted
-        {
-            return GetFullPathNameW(&wpath[0],
-                                    absPath.length,
-                                    &absPath[prefix.length],
-                                    null /*filePartBuffer*/);
-        }();
-
-        if (absPathRet > absPath.length) return null;
-
-        return absPath[0 .. absPathRet];
-    }
 }

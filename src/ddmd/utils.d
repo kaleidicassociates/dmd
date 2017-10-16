@@ -92,7 +92,6 @@ extern (C++) void writeFile(Loc loc, File* f)
  */
 extern (C++) void ensurePathToNameExists(Loc loc, const(char)* name)
 {
-    import core.stdc.stdio;
     const(char)* pt = FileName.path(name);
     if (*pt)
     {

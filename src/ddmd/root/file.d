@@ -254,16 +254,24 @@ nothrow:
         }
         else version (Windows)
         {
-            DWORD numwritten;
+            import ddmd.root.filename: toExtendedLengthPath;
+
+            DWORD numwritten; // here because of the gotos
             const(char)* name = this.name.toChars();
-            HANDLE h = CreateFileW(&name.toExtendedLengthPath[0],
+            // work around Windows file path length limitation
+            // (see documentation for toExtendedLengthPath).
+            wchar[1024] buf;
+            const extendedPath = name.toExtendedLengthPath(buf);
+            HANDLE h = CreateFileW(&extendedPath[0],
                                    GENERIC_WRITE,
                                    0,
                                    null,
-                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                                   CREATE_ALWAYS,
+                                   FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
                                    null);
             if (h == INVALID_HANDLE_VALUE)
                 goto err;
+
             if (WriteFile(h, buffer, cast(DWORD)len, &numwritten, null) != TRUE)
                 goto err2;
             if (len != numwritten)
