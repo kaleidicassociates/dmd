@@ -748,11 +748,9 @@ version(Windows)
         import core.sys.windows.winerror: ERROR_ALREADY_EXISTS;
         import core.stdc.errno: errno, EEXIST;
 
-        const extendedPath = path.toExtendedLengthPath();
+        wchar[2048] buf;
+        const extendedPath = path.toExtendedLengthPath(buf);
 
-        // the CreateDirectoryW function takes a pointer to a structure,
-        // but since we're not interested in using it it's declared void*
-        // and we pass null for the default behaviour.
         DWORD lastError;
         const createRet = () @trusted
         {
