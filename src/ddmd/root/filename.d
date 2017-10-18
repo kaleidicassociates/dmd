@@ -788,7 +788,7 @@ version(Windows)
 
         static immutable prefix = `\\?\`w; // see comment above
 
-        wchar[1024] absBuf;
+        static wchar[1024] absBuf;
 
         // We don't know how large the absolute file path will be We
         // need to tell GetFullPathName the size of the buffer we're
