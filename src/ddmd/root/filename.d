@@ -751,13 +751,8 @@ version(Windows)
         wchar[2048] buf;
         const extendedPath = path.toExtendedLengthPath(buf);
 
-        DWORD lastError;
-        const createRet = () @trusted
-        {
-            const ret = CreateDirectoryW(&extendedPath[0], null /*securityAttributes*/);
-            lastError = GetLastError();
-            return ret;
-        }();
+        const createRet = CreateDirectoryW(&extendedPath[0], null /*securityAttributes*/);
+        const lastError = GetLastError();
 
         // Preserve compatibility with mkdir since the calling code expects
         // errno to be set.
@@ -785,30 +780,71 @@ version(Windows)
         // Now wpath is the UTF16 version of path, but to be able to use
         // extended paths, we need to prefix with `\\?\` and the absolute
         // path.
-
-        static immutable prefix = `\\?\`w; // see comment above
-
-        static wchar[1024] absBuf;
+        static immutable prefix = `\\?\`w;
 
         // We don't know how large the absolute file path will be We
-        // need to tell GetFullPathName the size of the buffer we're
+        // need to tell GetFullPathNameW the size of the buffer we're
         // passing in so we defensively allocate 4 times the size of
         // the string we have currently.
         const absLength = prefix.length + wpath.length * 4;
+
+        // We now need a buffer `absLength` long. We try to reuse buf if there's
+        // enough space left. If not, allocate.
+        static wchar[1024] absBuf;
         auto absPath = absLength > absBuf.length ? new wchar[absLength] : absBuf[];
 
         absPath[0 .. prefix.length] = prefix[];
 
-        const absPathRet = () @trusted
-        {
-            return GetFullPathNameW(&wpath[0],
-                                    absPath.length,
-                                    &absPath[prefix.length],
-                                    null /*filePartBuffer*/);
-        }();
+        const absPathRet = GetFullPathNameW(&wpath[0],
+                                            absPath.length,
+                                            &absPath[prefix.length],
+                                            null /*filePartBuffer*/);
 
+        const foo = absPathRet > absPath.length ? null : absPath[0 .. absPathRet];
         return absPathRet > absPath.length ? null : absPath[0 .. absPathRet];
     }
+
+    // Converts a path to one suitable to be passed to Win32 API
+    // functions that can deal with paths longer than 248
+    // characters. For more information:
+    // https://msdn.microsoft.com/en-us/library/windows/desktop/aa365247(v=vs.85).aspx
+    // buf is used as a scratch space instead of allocating. If its length is insufficient,
+    // memory is allocated on the GC heap.
+    package wchar[] toExtendedLengthPath(const(char*) path, wchar[] buf = []) nothrow
+    {
+        import core.sys.windows.winbase: GetFullPathNameW;
+
+        // Since the unicode Win32 APIs use UTF16, we need to convert
+        // from UTF8 to UTF16 first.
+        const wpath = path.toWStringz(buf);
+
+        // Now wpath is the UTF16 version of path, but to be able to use
+        // extended paths, we need to prefix with `\\?\` and the absolute
+        // path.
+        static immutable prefix = `\\?\`w;
+
+        // We don't know how large the absolute file path will be.
+        // We need to tell GetFullPathNameW the size of the buffer we're
+        // passing in so we defensively allocate 4 times the size of
+        // the string we have currently.
+        const absLength = prefix.length + wpath.length * 4;
+
+        // We now need a buffer `absLength` long. We try to reuse buf if there's
+        // enough space left. If not, allocate.
+        static wchar[1024] absBuf;
+        auto absPath = absLength > absBuf.length ? new wchar[absLength] : absBuf[];
+
+        absPath[0 .. prefix.length] = prefix[];
+
+        const absPathRet = GetFullPathNameW(&wpath[0],
+                                            absPath.length,
+                                            &absPath[prefix.length],
+                                            null /*filePartBuffer*/);
+
+        const foo = absPathRet > absPath.length ? null : absPath[0 .. absPathRet];
+        return absPathRet > absPath.length ? null : absPath[0 .. absPathRet];
+    }
+
 
     // Converts an UTF8 null-terminated string to an array of wchar that's null
     // terminated so it can be passed to Win32 APIs.
