@@ -260,7 +260,7 @@ nothrow:
             const(char)* name = this.name.toChars();
             // work around Windows file path length limitation
             // (see documentation for toExtendedLengthPath).
-            wchar[1024] buf;
+            wchar[2048] buf;
             const extendedPath = name.toExtendedLengthPath(buf);
             HANDLE h = CreateFileW(&extendedPath[0],
                                    GENERIC_WRITE,
