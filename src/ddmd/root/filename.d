@@ -26,7 +26,6 @@ import ddmd.root.rootobject;
 
 nothrow
 {
-version (Windows) extern (C) int mkdir(const char*);
 version (Windows) extern (C) int stricmp(const char*, const char*) pure;
 version (Posix) extern (C) char* canonicalize_file_name(const char*);
 }
@@ -744,18 +743,31 @@ version(Windows)
     */
     private int _mkdir(const(char)* path) nothrow
     {
-        import core.sys.windows.winbase: CreateDirectoryW, GetLastError;
-        import core.sys.windows.winerror: ERROR_ALREADY_EXISTS;
-        import core.stdc.errno: errno, EEXIST;
+        import core.sys.windows.winbase: CreateDirectoryW, GetLastError, SetLastError;
+        import core.sys.windows.winerror: ERROR_ALREADY_EXISTS, ERROR_PATH_NOT_FOUND, NO_ERROR;
+        import core.stdc.errno: errno, EEXIST, ENOENT;
 
+        SetLastError(NO_ERROR);
         const createRet = path.extendedPathThen!(p => CreateDirectoryW(&p[0],
                                                                        null /*securityAttributes*/));
         const lastError = GetLastError();
 
         // Preserve compatibility with mkdir since the calling code expects
         // errno to be set.
-        if (createRet == 0 && lastError == ERROR_ALREADY_EXISTS)
-            errno(EEXIST);
+        if (createRet == 0)
+        {
+            switch (lastError)
+            {
+                case ERROR_ALREADY_EXISTS:
+                    errno(EEXIST);
+                    break;
+                case ERROR_PATH_NOT_FOUND:
+                    errno(ENOENT);
+                    break;
+                default:
+                    break;
+            }
+        }
 
         // different conventions for CreateDirectory and mkdir
         return createRet == 0 ? 1 : 0;
@@ -775,27 +787,43 @@ version(Windows)
         // from UTF8 to UTF16 first.
         const wpath = path.toWStringz(wpathBuf);
 
-        // Now wpath is the UTF16 version of path, but to be able to use
+        // GetFullPathNameW expects a sized buffer to store the result in. Since we don't
+        // know how larget it has to be, we pass in null and get the needed buffer length
+        // as the return code.
+        const pathLength = GetFullPathNameW(&wpath[0],
+                                            0 /*length8*/,
+                                            null /*output buffer*/,
+                                            null /*filePartBuffer*/);
+        const wchar[] emptyPath;
+        if (pathLength == 0)
+        {
+            return F(emptyPath);
+        }
+
+        // wpath is the UTF16 version of path, but to be able to use
         // extended paths, we need to prefix with `\\?\` and the absolute
         // path.
         static immutable prefix = `\\?\`w;
 
-        // We don't know how large the absolute file path will be.
-        // We need to tell GetFullPathNameW the size of the buffer we're
-        // passing in so we defensively allocate 4 times the size of
-        // the string we have currently.
-        const absLength = prefix.length + wpath.length * 4;
-        static wchar[1024] absBuf;
-        auto absPath = absLength > absBuf.length ? new wchar[absLength] : absBuf[];
+        // +1 for the null terminator
+        const bufferLength = pathLength + prefix.length + 1;
+
+        wchar[1024] absBuf;
+        auto absPath = bufferLength > absBuf.length ? new wchar[bufferLength] : absBuf[];
 
         absPath[0 .. prefix.length] = prefix[];
 
         const absPathRet = GetFullPathNameW(&wpath[0],
-                                            absPath.length,
+                                            absPath.length - prefix.length,
                                             &absPath[prefix.length],
                                             null /*filePartBuffer*/);
 
-        auto extendedPath = absPathRet > absPath.length ? null : absPath[0 .. absPathRet];
+        if (absPathRet == 0 || absPathRet > absPath.length)
+        {
+            return F(emptyPath);
+        }
+
+        auto extendedPath = absPath[0 .. absPathRet];
         return F(extendedPath);
     }
 
@@ -810,10 +838,11 @@ version(Windows)
 
         const length8 = strlen(str);
 
-        // Conservative estimate that should be enough for any UTF8 string
-        // according to https://tools.ietf.org/html/rfc3629.
+        // The worst case scenario is that the UTF16 encoding needs two code units,
+        // but if that's true then the UTF8 encoding will be multi-byte. Therefore
+        // the maximum needed space to allocate is a one-to-one scenario.
         // The +1 is for the null terminator.
-        const length16 = length8 * 4 + 1;
+        const length16 = length8 + 1;
 
         auto wstr = length16 > buf.length ? new wchar[length16] : buf;
 
