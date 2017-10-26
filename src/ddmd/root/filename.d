@@ -590,16 +590,15 @@ nothrow:
         }
         else version (Windows)
         {
-            DWORD dw;
-            int result;
-            dw = GetFileAttributesA(name);
+            wchar[1024] wnameBuf;
+            const wname = name.toWStringz(wnameBuf);
+            const dw = GetFileAttributesW(&wname[0]);
             if (dw == -1)
-                result = 0;
+                return 0;
             else if (dw & FILE_ATTRIBUTE_DIRECTORY)
-                result = 2;
+                return 2;
             else
-                result = 1;
-            return result;
+                return 1;
         }
         else
         {
@@ -678,22 +677,36 @@ nothrow:
         }
         else version (Windows)
         {
-            import core.sys.windows.winbase: GetFullPathNameA;
+            import core.sys.windows.winbase: GetFullPathNameW;
+
+            wchar[1024] wpathBuf;
+            const wpath = name.toWStringz(wpathBuf);
 
             /* Apparently, there is no good way to do this on Windows.
              * GetFullPathName isn't it, but use it anyway.
              */
-            DWORD result = GetFullPathNameA(name, 0, null, null);
-            if (result)
+            DWORD length16 = GetFullPathNameW(&wpath[0], 0, null, null);
+            if (length16)
             {
-                char* buf = cast(char*)malloc(result);
-                result = GetFullPathNameA(name, result, buf, null);
-                if (result == 0)
+                auto buf = cast(wchar*)malloc(length16);
+                length16 = GetFullPathNameW(&wpath[0], length16, buf, null);
+                if (length16 == 0)
                 {
                     .free(buf);
                     return null;
                 }
-                return buf;
+
+                // allocate enough space for a UTF8 encoding of buf
+                const length8 = length16 * 4 + 1;
+                auto str = cast(char*)malloc(length8);
+                size_t strLen;
+
+                try
+                    foreach(char c; buf[0 .. length16]) str[strLen++] = c;
+                catch(Exception _) {}
+
+                str[strLen] = 0; // null-terminate it
+                return &str[0];
             }
             return null;
         }
@@ -848,7 +861,7 @@ version(Windows)
 
         // Using i, wchar c in the foreach doesn't work since then i would
         // be tied to the length of the UTF8 sequence.
-        int wstrLen;
+        size_t wstrLen;
         try
             foreach(wchar c; str[0 .. length8]) wstr[wstrLen++] = c;
         catch(Exception)
