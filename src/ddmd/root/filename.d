@@ -688,22 +688,24 @@ nothrow:
             DWORD length16 = GetFullPathNameW(&wpath[0], 0, null, null);
             if (length16)
             {
-                auto buf = cast(wchar*)malloc(length16);
-                length16 = GetFullPathNameW(&wpath[0], length16, buf, null);
+                auto buf = new wchar[length16];
+                length16 = GetFullPathNameW(&wpath[0], length16, &buf[0], null);
                 if (length16 == 0)
                 {
-                    .free(buf);
                     return null;
                 }
 
                 // allocate enough space for a UTF8 encoding of buf
-                const length8 = length16 * 4 + 1;
-                auto str = cast(char*)malloc(length8);
+                const length8 = length16 * 3 + 1;
+                auto str = new char[length8];
                 size_t strLen;
 
                 try
                     foreach(char c; buf[0 .. length16]) str[strLen++] = c;
-                catch(Exception _) {}
+                catch(Exception _)
+                {
+                    return null;
+                }
 
                 str[strLen] = 0; // null-terminate it
                 return &str[0];
@@ -831,7 +833,7 @@ version(Windows)
                                             &absPath[prefix.length],
                                             null /*filePartBuffer*/);
 
-        if (absPathRet == 0 || absPathRet > absPath.length)
+        if (absPathRet == 0 || absPathRet > absPath.length - prefix.length)
         {
             return F(emptyPath);
         }
