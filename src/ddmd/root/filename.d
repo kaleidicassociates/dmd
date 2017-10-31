@@ -809,10 +809,9 @@ version(Windows)
                                             0 /*length8*/,
                                             null /*output buffer*/,
                                             null /*filePartBuffer*/);
-        const wchar[] emptyPath;
         if (pathLength == 0)
         {
-            return F(emptyPath);
+            return F(""w);
         }
 
         // wpath is the UTF16 version of path, but to be able to use
@@ -835,7 +834,7 @@ version(Windows)
 
         if (absPathRet == 0 || absPathRet > absPath.length - prefix.length)
         {
-            return F(emptyPath);
+            return F(""w);
         }
 
         auto extendedPath = absPath[0 .. absPathRet];
